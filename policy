@@ -1,12 +1,12 @@
 data "aws_iam_policy_document" "full_policy" {
-  # Force HTTPS block
+  # Force HTTPS
   statement {
     sid    = "ForceHttps"
     effect = "Deny"
     actions = ["s3:*"]
     resources = ["${data.aws_s3_bucket.target.arn}/*"]
     principals {
-      type = "*"
+      type        = "*"
       identifiers = ["*"]
     }
     condition {
@@ -16,19 +16,36 @@ data "aws_iam_policy_document" "full_policy" {
     }
   }
 
-  # Lambda notification access
+  # Cross-account role access (static)
   statement {
-    sid = "AllowLambdaNotifications"
+    sid    = "NISAccessPolicy"
+    effect = "Allow"
+    actions = ["s3:GetObject", "s3:PutObject"]
+    principals {
+      type        = "AWS"
+      identifiers = [
+        "arn:aws-us-gov:iam::215341294488:role/devops-nis-efm-crossaccount-lambda-role"
+      ]
+    }
+    resources = [
+      data.aws_s3_bucket.target.arn,
+      "${data.aws_s3_bucket.target.arn}/*"
+    ]
+  }
+
+  # Lambda notifications
+  statement {
+    sid    = "AllowLambdaNotifications"
     effect = "Allow"
     principals {
       type        = "Service"
       identifiers = ["lambda.amazonaws.com"]
     }
-    actions = ["s3:PutBucketNotification"]
+    actions   = ["s3:PutBucketNotification"]
     resources = [data.aws_s3_bucket.target.arn]
   }
 
-  # 👇 Customer blocks from map
+  # Dynamic customer statements
   dynamic "statement" {
     for_each = var.customer_access_map
 
