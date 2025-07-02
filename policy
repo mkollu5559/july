@@ -1,70 +1,116 @@
-data "aws_iam_policy_document" "full_policy" {
-  # Force HTTPS
+data "aws_s3_bucket" "target" {
+  bucket = var.bucket_name
+}
+
+###############################
+# 1. Static - HTTPS enforcement
+###############################
+data "aws_iam_policy_document" "https_only" {
   statement {
     sid    = "ForceHttps"
     effect = "Deny"
-    actions = ["s3:*"]
-    resources = ["${data.aws_s3_bucket.target.arn}/*"]
+
     principals {
       type        = "*"
       identifiers = ["*"]
     }
+
+    actions = ["s3:*"]
+
+    resources = ["${data.aws_s3_bucket.target.arn}/*"]
+
     condition {
       test     = "Bool"
       variable = "aws:SecureTransport"
       values   = ["false"]
     }
   }
+}
 
-  # Cross-account role access (static)
+###############################
+# 2. Static - Lambda Access
+###############################
+data "aws_iam_policy_document" "lambda_access" {
   statement {
-    sid    = "NISAccessPolicy"
+    sid    = "AllowLambdaNotifications"
     effect = "Allow"
-    actions = ["s3:GetObject", "s3:PutObject"]
+
     principals {
-      type        = "AWS"
-      identifiers = [
-        "arn:aws-us-gov:iam::215341294488:role/devops-nis-efm-crossaccount-lambda-role"
-      ]
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
     }
+
+    actions = ["s3:PutBucketNotification"]
+
     resources = [
       data.aws_s3_bucket.target.arn,
       "${data.aws_s3_bucket.target.arn}/*"
     ]
   }
+}
 
-  # Lambda notifications
+###############################
+# 3. Cross-account Roles
+###############################
+data "aws_iam_policy_document" "cross_roles" {
   statement {
-    sid    = "AllowLambdaNotifications"
+    sid    = "CrossAccountAccess"
     effect = "Allow"
+
     principals {
-      type        = "Service"
-      identifiers = ["lambda.amazonaws.com"]
+      type        = "AWS"
+      identifiers = var.cross_account_roles
     }
-    actions   = ["s3:PutBucketNotification"]
-    resources = [data.aws_s3_bucket.target.arn]
+
+    actions = ["s3:GetObject", "s3:PutObject"]
+
+    resources = [
+      data.aws_s3_bucket.target.arn,
+      "${data.aws_s3_bucket.target.arn}/*"
+    ]
   }
+}
 
-  # Dynamic customer statements
-  dynamic "statement" {
-    for_each = var.customer_access_map
+###############################
+# 4. Dynamic - Customer Access
+###############################
+data "aws_iam_policy_document" "customers" {
+  for_each = var.customer_access_map
 
-    content {
-      sid = "AllowS3Access-${each.key}"
+  statement {
+    sid    = "AllowS3Access-${each.key}"
+    effect = "Allow"
 
-      effect = "Allow"
-
-      principals {
-        type        = "AWS"
-        identifiers = each.value.principals
-      }
-
-      actions = each.value.actions
-
-      resources = flatten([
-        for prefix in each.value.prefixes :
-        "${data.aws_s3_bucket.target.arn}/${prefix}/*"
-      ])
+    principals {
+      type        = "AWS"
+      identifiers = each.value.principals
     }
+
+    actions = each.value.actions
+
+    resources = flatten([
+      for prefix in each.value.prefixes :
+      "${data.aws_s3_bucket.target.arn}/${prefix}/*"
+    ])
   }
+}
+
+###############################
+# 5. Merge All Documents
+###############################
+data "aws_iam_policy_document" "final" {
+  source_json = jsonencode([
+    jsondecode(data.aws_iam_policy_document.https_only.json),
+    jsondecode(data.aws_iam_policy_document.lambda_access.json),
+    jsondecode(data.aws_iam_policy_document.cross_roles.json),
+    for doc in data.aws_iam_policy_document.customers : jsondecode(doc.value.json)
+  ])
+}
+
+###############################
+# 6. Attach to Bucket
+###############################
+resource "aws_s3_bucket_policy" "attach" {
+  bucket = data.aws_s3_bucket.target.id
+  policy = data.aws_iam_policy_document.final.json
 }
