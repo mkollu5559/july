@@ -1,88 +1,72 @@
-data "aws_iam_policy_document" "full_policy" {
-  # HTTPS only
-  statement {
-    sid     = "ForceHttps"
-    effect  = "Deny"
-    actions = ["s3:*"]
-    resources = ["${data.aws_s3_bucket.target.arn}/*"]
+data "aws_kms_key" "existing" {
+  key_id = var.kms_key_id
+}
 
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
+data "aws_caller_identity" "current" {}
 
-    condition {
-      test     = "Bool"
-      variable = "aws:SecureTransport"
-      values   = ["false"]
-    }
-  }
+resource "aws_kms_key_policy" "update" {
+  key_id = data.aws_kms_key.existing.key_id
 
-  # Lambda access
-  statement {
-    sid     = "AllowLambdaNotifications"
-    effect  = "Allow"
-    actions = ["s3:PutBucketNotification"]
-    resources = [data.aws_s3_bucket.target.arn]
-
-    principals {
-      type        = "Service"
-      identifiers = ["lambda.amazonaws.com"]
-    }
-  }
-
-  # Cross-account access
-  statement {
-    sid     = "CrossAccountAccess"
-    effect  = "Allow"
-    actions = ["s3:GetObject", "s3:PutObject"]
-    resources = [
-      data.aws_s3_bucket.target.arn,
-      "${data.aws_s3_bucket.target.arn}/*"
-    ]
-
-    principals {
-      type        = "AWS"
-      identifiers = var.cross_account_roles
-    }
-  }
-
-  # Dynamic customer statements
-  dynamic "statement" {
-    for_each = local.customer_statements
-
-    content {
-      sid    = statement.value.sid
-      effect = "Allow"
-
-      principals {
-        type        = "AWS"
-        identifiers = statement.value.principals
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Id        = "key-consolepolicy-3"
+    Statement = [
+      {
+        Sid       = "Enable IAM User Permissions"
+        Effect    = "Allow"
+        Principal = {
+          AWS = "arn:aws-us-gov:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid       = "Allow access for Key Administrators"
+        Effect    = "Allow"
+        Principal = {
+          AWS = [
+            "arn:aws-us-gov:iam::199587841521:role/devops-nis-efa-sftp",
+            "arn:aws-us-gov:iam::215124944813:role/devops-nis-efa-crossaccount-lambda-role",
+            "arn:aws-us-gov:iam::199587841521:role/cfs-adt-engineer-role"
+          ]
+        }
+        Action   = [
+          "kms:Describe*",
+          "kms:Get*",
+          "kms:List*",
+          "kms:Revoke*",
+          "kms:Disable*",
+          "kms:Enable*",
+          "kms:Delete*",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion",
+          "kms:Create*",
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid       = "AllowKMSKeyAccess-fso-easy"
+        Effect    = "Allow"
+        Principal = {
+          AWS = var.fso_easy_principals
+        }
+        Action = [
+          "kms:List*",
+          "kms:Get*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*",
+          "kms:Decrypt"
+        ]
+        Resource = [
+          "${data.aws_kms_key.existing.arn}"
+        ]
       }
-
-      actions   = statement.value.actions
-      resources = statement.value.resources
-    }
-  }
+    ]
+  })
 }
-
-resource "aws_s3_bucket_policy" "attach" {
-  bucket = data.aws_s3_bucket.target.id
-  policy = data.aws_iam_policy_document.full_policy.json
-}
-
-
-locals {
-  customer_statements = {
-    for customer, props in var.customer_access_map : customer => {
-      sid       = "AllowS3Access-${customer}"
-      principals = props.principals
-      actions    = props.actions
-      resources  = [
-        for prefix in props.prefixes :
-        "${data.aws_s3_bucket.target.arn}/${prefix}/*"
-      ]
-    }
-  }
-}
-
