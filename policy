@@ -2,9 +2,9 @@ data "aws_s3_bucket" "target" {
   bucket = var.bucket_name
 }
 
-###############################
-# 1. Static - HTTPS enforcement
-###############################
+########################################
+# 1. Static - Force HTTPS
+########################################
 data "aws_iam_policy_document" "https_only" {
   statement {
     sid    = "ForceHttps"
@@ -27,9 +27,9 @@ data "aws_iam_policy_document" "https_only" {
   }
 }
 
-###############################
+########################################
 # 2. Static - Lambda Access
-###############################
+########################################
 data "aws_iam_policy_document" "lambda_access" {
   statement {
     sid    = "AllowLambdaNotifications"
@@ -49,9 +49,9 @@ data "aws_iam_policy_document" "lambda_access" {
   }
 }
 
-###############################
-# 3. Cross-account Roles
-###############################
+########################################
+# 3. Static - Cross-account Role Access
+########################################
 data "aws_iam_policy_document" "cross_roles" {
   statement {
     sid    = "CrossAccountAccess"
@@ -71,45 +71,47 @@ data "aws_iam_policy_document" "cross_roles" {
   }
 }
 
-###############################
+########################################
 # 4. Dynamic - Customer Access
-###############################
+########################################
 data "aws_iam_policy_document" "customers" {
-  for_each = var.customer_access_map
+  dynamic "statement" {
+    for_each = var.customer_access_map
 
-  statement {
-    sid    = "AllowS3Access-${each.key}"
-    effect = "Allow"
+    content {
+      sid    = "AllowS3Access-${each.key}"
+      effect = "Allow"
 
-    principals {
-      type        = "AWS"
-      identifiers = each.value.principals
+      principals {
+        type        = "AWS"
+        identifiers = each.value.principals
+      }
+
+      actions = each.value.actions
+
+      resources = [
+        for prefix in each.value.prefixes :
+        "${data.aws_s3_bucket.target.arn}/${prefix}/*"
+      ]
     }
-
-    actions = each.value.actions
-
-    resources = flatten([
-      for prefix in each.value.prefixes :
-      "${data.aws_s3_bucket.target.arn}/${prefix}/*"
-    ])
   }
 }
 
-###############################
-# 5. Merge All Documents
-###############################
+########################################
+# 5. Combine all policy docs
+########################################
 data "aws_iam_policy_document" "final" {
   source_json = jsonencode([
     jsondecode(data.aws_iam_policy_document.https_only.json),
     jsondecode(data.aws_iam_policy_document.lambda_access.json),
     jsondecode(data.aws_iam_policy_document.cross_roles.json),
-    for doc in data.aws_iam_policy_document.customers : jsondecode(doc.value.json)
+    jsondecode(data.aws_iam_policy_document.customers.json)
   ])
 }
 
-###############################
-# 6. Attach to Bucket
-###############################
+########################################
+# 6. Attach final policy to S3 bucket
+########################################
 resource "aws_s3_bucket_policy" "attach" {
   bucket = data.aws_s3_bucket.target.id
   policy = data.aws_iam_policy_document.final.json
